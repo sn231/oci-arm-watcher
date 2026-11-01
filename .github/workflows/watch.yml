@@ -1,0 +1,82 @@
+name: OCI capacity watcher
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: oci-arm-watcher
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install OCI SDK
+        run: pip install --quiet oci
+
+      - name: Configure OCI credentials
+        env:
+          OCI_USER: ${{ secrets.OCI_USER }}
+          OCI_TENANCY: ${{ secrets.OCI_TENANCY }}
+          OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_REGION: ${{ secrets.OCI_REGION }}
+          OCI_KEY: ${{ secrets.OCI_KEY }}
+        run: |
+          mkdir -p "$HOME/.oci"
+          {
+            echo "[DEFAULT]"
+            echo "user=${OCI_USER}"
+            echo "fingerprint=${OCI_FINGERPRINT}"
+            echo "tenancy=${OCI_TENANCY}"
+            echo "region=${OCI_REGION}"
+            echo "key_file=${HOME}/.oci/oci_api_key.pem"
+          } > "$HOME/.oci/config"
+          printf '%s\n' "$OCI_KEY" > "$HOME/.oci/oci_api_key.pem"
+          chmod 600 "$HOME/.oci/oci_api_key.pem"
+
+      - name: Check capacity
+        env:
+          OCI_AD: ${{ vars.OCI_AD }}
+          OCI_SUBNET_ID: ${{ vars.OCI_SUBNET_ID }}
+          OCI_IMAGE_A1: ${{ vars.OCI_IMAGE_A1 }}
+          OCI_IMAGE_AMD: ${{ vars.OCI_IMAGE_AMD }}
+          OCI_SSH_PUBLIC_KEY: ${{ vars.OCI_SSH_PUBLIC_KEY }}
+        run: python watch.py --once
+
+      - name: Publish result
+        if: always()
+        run: |
+          if [ -f SUCCESS.json ]; then
+            target=$(jq -r .target SUCCESS.json)
+            instance=$(jq -r .id SUCCESS.json)
+            {
+              echo "## Instance created"
+              echo "- target: ${target}"
+              echo "- instance: \`${instance}\`"
+              echo "公网 IP 请在 OCI 控制台查看。"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Keep scheduled workflow enabled
+        if: github.event_name == 'schedule'
+        run: |
+          if [ ! -f .github/heartbeat ] || [ $(( ( $(date +%s) - $(stat -c %Y .github/heartbeat) ) / 86400 )) -ge 7 ]; then
+            date -u +%FT%TZ > .github/heartbeat
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add .github/heartbeat
+            git commit -m "chore: heartbeat"
+            git push || true
+          fi

@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+watch.log
+watch.pid
+SUCCESS.json
+*.pem
